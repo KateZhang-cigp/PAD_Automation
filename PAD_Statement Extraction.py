@@ -232,11 +232,7 @@ if __name__ == "__main__":
     export_to_excel(account, trades, output_excel)
 
 
-# In[ ]:
-
-
-# For Futu Chinese version
-
+# # For Futu Chinese version
 
 # In[39]:
 
@@ -2313,9 +2309,295 @@ print("\n✅ DONE — All trades exported to:", output_file)
 print(df)
 
 
+# Extraction from Vontobel
+
+# In[8]:
+
+
+import pdfplumber
+import re
+import pandas as pd
+import os
+
+PDF_PATH = r"C:\Users\KateZhang\OneDrive - CIGP SA\Desktop\PAD Automation\Vontobel_Files\February 2026 Uploaded On 3_6_2026 7_54_41 AM.pdf"
+
+# -------- STEP 1: READ PDF ----------
+all_text = ""
+transaction_text = ""
+
+with pdfplumber.open(PDF_PATH) as pdf:
+    for i, page in enumerate(pdf.pages):
+        text = page.extract_text()
+
+        if text:
+            all_text += "\n" + text
+
+        # ✅ Transaction page (page 17 → index 16)
+        if i == 16:
+            transaction_text = text
+
+# -------- STEP 2: ACCOUNT INFO ----------
+
+# ✅ Name: remove comma → only space
+name_match = re.search(r"Nome\s+([A-Za-z,\s]+?)\s+Succursale", all_text)
+account_name = name_match.group(1).strip() if name_match else None
+if account_name:
+    account_name = account_name.replace(",", "")
+
+# ✅ Account ID: remove decimal part
+portfolio_match = re.search(r"Portafoglio\s+(\d+\.\d+)", all_text)
+account_id = portfolio_match.group(1) if portfolio_match else None
+if account_id:
+    account_id = account_id.split(".")[0]
+
+# ✅ Broker shortened
+broker = "Vontobel"
+
+# -------- STEP 3: SPLIT ----------
+lines = [l.strip() for l in transaction_text.split("\n") if l.strip()]
+
+# -------- STEP 4: BUILD BLOCKS ----------
+blocks = []
+current_block = ""
+
+for line in lines:
+    if re.match(r"^-?\s*\d[\d’.,]*", line):
+        if current_block:
+            blocks.append(current_block)
+        current_block = line
+    else:
+        current_block += " " + line
+
+if current_block:
+    blocks.append(current_block)
+
+# -------- STEP 5: EXTRACT ----------
+trades = []
+
+for block in blocks:
+
+    if any(x in block for x in ["Acquisto", "Vendita", "Rimborso"]):
+
+        # ✅ TYPE: capitalize only first letter
+        if "Acquisto" in block:
+            trade_type = "Buy"
+        elif "Vendita" in block:
+            trade_type = "Sell"
+        elif "Rimborso" in block:
+            trade_type = "Sell"
+        else:
+            continue
+
+        # ✅ DATE: convert to dd-mm-yy
+        dates = re.findall(r"\d{2}\.\d{2}\.\d{4}", block)
+        if dates:
+            d, m, y = dates[0].split(".")
+            trade_date = f"{d}-{m}-{y[-2:]}"
+        else:
+            trade_date = None
+
+        # ✅ Quantity: remove '
+        qty_match = re.match(r"^-?\s*(\d[\d’.,]*)", block)
+        quantity = qty_match.group(1) if qty_match else None
+        if quantity:
+            quantity = quantity.replace("’", "").replace("'", "")
+
+        # ✅ SECURITY CLEANING
+        security = None
+        isin_match = re.search(r"[A-Z]{2}[A-Z0-9]{10}", block)
+
+        if isin_match:
+            before_isin = block[:isin_match.start()]
+            before_isin = re.sub(r"^-?\s*\d[\d’.,]*\s+", "", before_isin)
+
+            # ✅ Remove everything after currency (EUR / CHF / USD)
+            sec_match = re.search(r"(.+?\b(?:EUR|CHF|USD))\b", before_isin)
+            if sec_match:
+                security = sec_match.group(1).strip()
+            else:
+                security = before_isin.strip()
+
+        trades.append({
+            "Account Name": account_name,
+            "Account ID": account_id,
+            "Trade Date": trade_date,
+            "Type": trade_type,
+            "Security": security,
+            "Quantity": quantity,
+            "Broker": broker
+        })
+
+# -------- STEP 6: OUTPUT ----------
+df = pd.DataFrame(trades)
+
+if not df.empty:
+    df = df[df["Security"].notna()]
+
+print("\n✅ FINAL RESULT:")
+print(df)
+
+# -------- STEP 7: SAVE ----------
+output_path = os.path.join(
+    os.path.dirname(PDF_PATH),
+    "extracted_trades.xlsx"
+)
+
+df.to_excel(output_path, index=False)
+
+print(f"\n✅ File saved to: {output_path}")
+
+
+# In[10]:
+
+
+## extract from all Vonobel Statements
+import pdfplumber
+import re
+import pandas as pd
+import os
+
+# -------- CONFIG --------
+FOLDER_PATH = r"C:\Users\KateZhang\OneDrive - CIGP SA\Desktop\PAD Automation\Vontobel_Files"
+
+all_trades = []
+
+# -------- LOOP THROUGH FILES --------
+for file_name in os.listdir(FOLDER_PATH):
+
+    if file_name.endswith(".pdf"):
+
+        pdf_path = os.path.join(FOLDER_PATH, file_name)
+
+        print(f"\n📄 Processing: {file_name}")
+
+        all_text = ""
+        transaction_text = ""
+
+        # -------- READ PDF --------
+        with pdfplumber.open(pdf_path) as pdf:
+
+            for i, page in enumerate(pdf.pages):
+
+                text = page.extract_text()
+
+                if text:
+                    all_text += "\n" + text
+
+                # ✅ Transaction page (page 17 → index 16)
+                if i == 16:
+                    transaction_text = text
+
+        # ✅ Skip file if no transaction page
+        if not transaction_text:
+            print("⚠️ No transaction page found — skipped")
+            continue
+
+        # -------- ACCOUNT INFO --------
+
+        name_match = re.search(r"Nome\s+([A-Za-z,\s]+?)\s+Succursale", all_text)
+        account_name = name_match.group(1).strip() if name_match else None
+        if account_name:
+            account_name = account_name.replace(",", "")
+
+        portfolio_match = re.search(r"Portafoglio\s+(\d+\.\d+)", all_text)
+        account_id = portfolio_match.group(1) if portfolio_match else None
+        if account_id:
+            account_id = account_id.split(".")[0]
+
+        broker = "Vontobel"
+
+        # -------- SPLIT ----------
+        lines = [l.strip() for l in transaction_text.split("\n") if l.strip()]
+
+        # -------- BUILD BLOCKS ----------
+        blocks = []
+        current_block = ""
+
+        for line in lines:
+            if re.match(r"^-?\s*\d[\d’.,]*", line):
+                if current_block:
+                    blocks.append(current_block)
+                current_block = line
+            else:
+                current_block += " " + line
+
+        if current_block:
+            blocks.append(current_block)
+
+        # -------- EXTRACT ----------
+        for block in blocks:
+
+            if any(x in block for x in ["Acquisto", "Vendita", "Rimborso"]):
+
+                # ✅ TYPE
+                if "Acquisto" in block:
+                    trade_type = "Buy"
+                elif "Vendita" in block:
+                    trade_type = "Sell"
+                elif "Rimborso" in block:
+                    trade_type = "Sell"
+                else:
+                    continue
+
+                # ✅ DATE → dd-mm-yy
+                dates = re.findall(r"\d{2}\.\d{2}\.\d{4}", block)
+                if dates:
+                    d, m, y = dates[0].split(".")
+                    trade_date = f"{d}-{m}-{y[-2:]}"
+                else:
+                    trade_date = None
+
+                # ✅ QUANTITY clean
+                qty_match = re.match(r"^-?\s*(\d[\d’.,]*)", block)
+                quantity = qty_match.group(1) if qty_match else None
+                if quantity:
+                    quantity = quantity.replace("’", "").replace("'", "")
+
+                # ✅ SECURITY clean
+                security = None
+                isin_match = re.search(r"[A-Z]{2}[A-Z0-9]{10}", block)
+
+                if isin_match:
+                    before_isin = block[:isin_match.start()]
+                    before_isin = re.sub(r"^-?\s*\d[\d’.,]*\s+", "", before_isin)
+
+                    sec_match = re.search(r"(.+?\b(?:EUR|CHF|USD))\b", before_isin)
+                    if sec_match:
+                        security = sec_match.group(1).strip()
+                    else:
+                        security = before_isin.strip()
+
+                all_trades.append({
+                    "Account Name": account_name,
+                    "Account ID": account_id,
+                    "Trade Date": trade_date,
+                    "Type": trade_type,
+                    "Security": security,
+                    "Quantity": quantity,
+                    "Broker": broker
+                })
+
+# -------- FINAL OUTPUT ----------
+df = pd.DataFrame(all_trades)
+
+# ✅ Remove empty rows
+if not df.empty:
+    df = df[df["Security"].notna()]
+
+print("\n✅ TOTAL TRADES EXTRACTED:", len(df))
+print(df.head())
+
+# -------- SAVE ----------
+output_path = os.path.join(FOLDER_PATH, "Vontobel_trades.xlsx")
+
+df.to_excel(output_path, index=False)
+
+print(f"\n✅ Final file saved to: {output_path}")
+
+
 # # Combine all records from different brokers
 
-# In[38]:
+# In[16]:
 
 
 import pandas as pd
@@ -2327,7 +2609,8 @@ from datetime import datetime
 files = {
     "HSBC": r"C:\Users\KateZhang\OneDrive - CIGP SA\Desktop\PAD Automation\HSBC_Files\HSBC_trades.xlsx",
     "FUTU": r"C:\Users\KateZhang\OneDrive - CIGP SA\Desktop\PAD Automation\Futu_Files\Futu_trades.xlsx",
-    "IBKR": r"C:\Users\KateZhang\OneDrive - CIGP SA\Desktop\PAD Automation\IBKR_Files\IBKR_trades.xlsx"
+    "IBKR": r"C:\Users\KateZhang\OneDrive - CIGP SA\Desktop\PAD Automation\IBKR_Files\IBKR_trades.xlsx",
+    "Vontobel": r"C:\Users\KateZhang\OneDrive - CIGP SA\Desktop\PAD Automation\Vontobel_Files\Vontobel_trades.xlsx"
 }
 
 # ✅ Output file
@@ -2388,8 +2671,24 @@ combined_df = pd.concat(all_dfs, ignore_index=True)
 
 
 # ✅ Standardize date
+
+# ✅ CLEAN Trade Date FIRST (important fix)
+combined_df["Trade Date"] = combined_df["Trade Date"].astype(str).str.strip()
+
+# ✅ Convert to datetime (robust)
+
+# ✅ FIX VONTOBEL 2-digit year → convert to 4-digit year
+def fix_vontobel_date(x):
+    if isinstance(x, str) and re.match(r"\d{2}-\d{2}-\d{2}$", x):
+        d, m, y = x.split("-")
+        return f"{d}-{m}-20{y}"   # assume 20xx
+    return x
+
+combined_df["Trade Date"] = combined_df["Trade Date"].apply(fix_vontobel_date)
 combined_df["Trade Date"] = pd.to_datetime(
-    combined_df["Trade Date"], format="%d-%m-%Y", errors="coerce"
+    combined_df["Trade Date"],
+    dayfirst=True,
+    errors="coerce"
 )
 
 # ✅ Sort
@@ -2470,7 +2769,7 @@ print("Saved to:", output_file)
 print(df)
 
 
-# In[39]:
+# In[17]:
 
 
 # add staff name column
@@ -2745,7 +3044,7 @@ print("\n✅ DONE — ISIN column generated")
 
 # # Match with PAD protal records
 
-# In[42]:
+# In[19]:
 
 
 import pandas as pd
@@ -3085,7 +3384,7 @@ print("✅ FINAL VERSION COMPLETE")
 
 # # For submission records check
 
-# In[45]:
+# In[18]:
 
 
 import pandas as pd
@@ -3158,10 +3457,4 @@ result.to_excel(output_file, index=False)
 print("✅ DONE — Clean control file created")
 print("Saved to:", output_file)
 print(result)
-
-
-# In[ ]:
-
-
-print("Version 3 - test")
 
